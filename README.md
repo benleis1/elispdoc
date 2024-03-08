@@ -7,7 +7,7 @@ Created: 5 Mar 2024
 Version: 0.1
 Keywords: tools
 Homepage: https://github.com/benleis1/elispdoc
-Package-Requires: (markdown-toc)
+Package-Requires: (markdown-toc) (org-make-toc)
 
 This program is free software: you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
@@ -26,22 +26,26 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 Simple tool to provide a javadoc like pipeline for elisp files that outputs a markdown file
 made out of comments with interspersed code blocks
+
 This is intended as an alternative to writing a config file in an org file and tangling it
 where you want the comments and code to be first class but also want to publish documentation
-built from it. Embed any markdown you want in comments and it will render properly in the
+built from it. Embed any markdown/org you want in comments and it will render properly in the
 transformed doc buffer.
 
 Usage:  eld-process-elisp-to-doc-buffer (buffername)
 A new buffer will be created with the transformed code within it.
 
+To determine the output format customize elispdoc-syntax.  Its set to markdown by default.
+
 Transforms done:
  - all code is blocked together
  - comment prefixes `;` are removed
  - triple comments  `;;;` are turned into headers
- - Emacs variables filtered on the first line 
+ - Emacs variables filtered on the first line
+ - Subheaders added for a functions
+ - TOC inserted after Code: comment
 
-TODO: add support for outputting as org as well
-TODO: add variable support in headers and sort option for toc
+- TODO: add variable support in headers and sort option for toc
 
 # Code:
 <!-- markdown-toc start - Don't edit this section. Run M-x markdown-toc-refresh-toc -->
@@ -59,15 +63,17 @@ TODO: add variable support in headers and sort option for toc
     - [eld--move-start-next-comment](#eld--move-start-next-comment)
     - [eld--line-next-comment](#eld--line-next-comment)
     - [eld--point-next-comment](#eld--point-next-comment)
-    - [eld--prequote-code](#eld--prequote-code)
+    - [eld--begin-code](#eld--begin-code)
+    - [eld--end-code](#eld--end-code)
     - [eld--point-at-end-of-buffer](#eld--point-at-end-of-buffer)
     - [eld--uncomment-noncode-block](#eld--uncomment-noncode-block)
     - [eld--add-header-to-function](#eld--add-header-to-function)
     - [eld--transform-code-block](#eld--transform-code-block)
     - [eld--transform-all-code-blocks](#eld--transform-all-code-blocks)
     - [eld--regex-replace-on-line](#eld--regex-replace-on-line)
+    - [eld--add-toc-org](#eld--add-toc-org)
     - [eld--add-toc](#eld--add-toc)
-    - [eld-process-elisp-to-doc-buffer](#eld-process-elisp-to-doc-buffer)
+    - [elispdoc-process-elisp-to-doc-buffer](#elispdoc-process-elisp-to-doc-buffer)
 
 <!-- markdown-toc end -->
 
@@ -75,11 +81,27 @@ TODO: add variable support in headers and sort option for toc
 
 Turn automatic function subheaders on or off.
 ```
-(defvar eld-include-function-headers t  "boolean indicating whether to add a subheader for each function")
+(defvar elispdoc-include-function-headers t  "boolean indicating whether to add a subheader for each function")
 ```
+
 Turn table of contents generation on or off.
 ```
-(defvar eld-include-toc t  "boolean indicating whether to add a table of contents after Code: section")
+(defvar elispdoc-include-toc t  "boolean indicating whether to add a table of contents after Code: section")
+```
+
+Map of document mode tokens
+```
+(setq elispdoc-markdown-syntax '((flavor . markdown) (begincode . "```") (endcode . "```")
+			    (header . "#") (subheader . "##") (beginquote . ">")))
+
+(setq elispdoc-org-syntax '((flavor . org) (begincode . "#+BEGIN_SRC lisp") (endcode . "#+END_SRC")
+		       (header . "*") (subheader . "**") (beginquote . "#+BEGIN_QUOTE\n" )
+		       (endquote . "#+END_QUOTE")))
+```
+
+Allow the user to pick between markdown, org and any future doc flavors
+```
+(defvar elispdoc-syntax elispdoc-markdown-syntax "Mapping used to determine the flavor of the output doc file")
 ```
 
 ## eld--move-start-next-sexp
@@ -173,12 +195,20 @@ move the cursor (hardcoded comment char)
       nil)))
 ```
 
-## eld--prequote-code
-Add a markdown code quote before the current line
+## eld--begin-code
+Add a begincode quote before the current line
 ```
-(defun eld--prequote-code ()
+(defun eld--begin-code ()
   (beginning-of-line)
-  (insert "```\n"))
+  (insert (alist-get 'begincode elispdoc-syntax) "\n"))
+```
+
+## eld--end-code
+Add am endcode quote before the current line
+```
+(defun eld--end-code ()
+  (beginning-of-line)
+  (insert (alist-get 'endcode elispdoc-syntax) "\n"))
 ```
 
 ## eld--point-at-end-of-buffer
@@ -208,7 +238,7 @@ This relies on the built in uncomment-region function
 ```
 
 ## eld--add-header-to-function
-Add a header comment ## name at the first blank line above it
+Add a header comment name at the first blank line above it
  that is also after the start point
 if no blank line is found insert a new line at start
 ```
@@ -216,11 +246,11 @@ if no blank line is found insert a new line at start
   (save-excursion
     (eld--move-start-next-sexp)
     (if (re-search-backward "^$" start t)
-	(insert "\n;;## " name)
+	(insert "\n;;" (cdr (assoc 'subheader elispdoc-syntax)) " " name)
       (progn
 	(goto-char start)
 	(beginning-of-line)
-	(insert "\n;;## " name "\n")))))
+	(insert "\n;;" (cdr (assoc 'subheader elispdoc-syntax)) " " name "\n")))))
 ```
 
 ## eld--transform-code-block
@@ -233,7 +263,7 @@ return t if a block was found o/w nil
 (defun eld--transform-code-block ()
 
   ;; add function headers if enabled
-  (when eld-include-function-headers
+  (when elispdoc-include-function-headers
     (let ((nextfun (eld--function-name-next-sexp)))
       (when nextfun
 	(eld--add-header-to-function nextfun (point)))))
@@ -241,20 +271,20 @@ return t if a block was found o/w nil
   (eld--uncomment-noncode-block)
   (if (eld--move-start-next-sexp)
       (progn
-	(eld--prequote-code)
+	(eld--begin-code)
 	(forward-sexp)
 
 	;; advance past any code that is before the next comment
 	;; when adding function headers also stop at the next defun
 	(while (and (eld--line-next-sexp)
-		    (or (not eld-include-function-headers) (not (eld--function-name-next-sexp)))
+		    (or (not elispdoc-include-function-headers) (not (eld--function-name-next-sexp)))
 		    (or (not (eld--line-next-comment))
 			(< (eld--line-next-sexp) (eld--line-next-comment))))
 	  (forward-sexp))
 
 	;; Add end quotes
 	(forward-line)
-	(eld--prequote-code)
+	(eld--end-code)
 	t)
     ;; else
     nil))
@@ -284,22 +314,42 @@ Replace a regular expression on the current line
      (replace-regexp-in-region exp replace start end))))
 ```
 
+## eld--add-toc-org
+Wrapper for using org-make-toc
+```
+(defun eld--add-toc-org ()
+  ;; directly add the template
+  (insert
+   ":PROPERTIES:\n"
+   ":TOC:      :include descendants :depth 2\n"
+   ":END:\n"
+   ":CONTENTS:\n"
+   ":END:\n")
+  (org-make-toc))
+```
+
 ## eld--add-toc
+  
 setup a table of contents using markdown-toc
 Placed after Code: comment
 ```
 (defun eld--add-toc ()
   (beginning-of-buffer)
-  (if (re-search-forward "^#\s?Code:" nil t)
+  (if (re-search-forward (concat "^" (alist-get 'header elispdoc-syntax) "\s?Code:") nil t)
       (progn
+	(message "adding toc")
 	(forward-line)
-	(markdown-toc-generate-toc))))
+	(let ((flavor (alist-get 'flavor elispdoc-syntax)))
+	  (cond ((eq flavor 'markdown) (markdown-toc-generate-toc))
+		((eq flavor 'org) (eld--add-toc-org))
+		(t (message "No mapping for doc flavor %s" (symbol-name flavor)))
+		)))))
 ```
 
-## eld-process-elisp-to-doc-buffer
+## elispdoc-process-elisp-to-doc-buffer
 Main user command to generate the processed buffer
 ```
-(defun eld-process-elisp-to-doc-buffer (bufname)
+(defun elispdoc-process-elisp-to-doc-buffer (bufname)
   "Transform the current elisp buffer into a new markdown doc buffer"
   (interactive "sNew buffer name:")
   (generate-new-buffer bufname)
@@ -310,16 +360,27 @@ Main user command to generate the processed buffer
       ;; remove any emacs file variables on the first line.
       (eld--regex-replace-on-line "\-\*\-.*\-*\-" "")
       ;; Convert any  triple comments to markdown headers 
-      (replace-regexp-in-region "^;;;" ";;#" 1 nil)
+      (replace-regexp-in-region "^;;;" (concat ";;" (cdr (assoc 'header elispdoc-syntax))) 1 nil)
       ;; Do the regular transform - quoting code and removing comments
       (eld--transform-all-code-blocks)
       (end-of-buffer)
       ;; Add a note at the end
-      (insert "\n> This file was auto-generated by elispdoc.el")
-      (markdown-mode)
+      (insert "\n" (alist-get 'beginquote elispdoc-syntax)
+	      " This file was auto-generated by elispdoc.el")
+      (when  (alist-get 'endquote elispdoc-syntax)
+	(insert "\n"  (alist-get 'endquote elispdoc-syntax)))
+
+      (let ((flavor (cdr (assoc 'flavor elispdoc-syntax))))
+	(cond ((eq flavor 'markdown) (markdown-mode))
+	      ((eq flavor 'org) (org-mode))
+	      (t (error (concat "unsupported document flavor: "
+				(symbol-name (cdr (assoc 'flavor elispdoc-syntax))))))))
       ;; Insert a toc after Code: if specified
-      (when eld-include-toc
+      (when elispdoc-include-toc
 	(eld--add-toc)))))
 ```
+
+
+
 
 > This file was auto-generated by elispdoc.el
