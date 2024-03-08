@@ -24,7 +24,7 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 # Commentary:
 
-Simple tool to provide a javadoc like pipeline for elisp files that outputs a markdown file
+Simple tool to provide a javadoc like pipeline for elisp files that outputs a markdown or org file
 made out of comments with interspersed code blocks
 
 This is intended as an alternative to writing a config file in an org file and tangling it
@@ -32,7 +32,7 @@ where you want the comments and code to be first class but also want to publish 
 built from it. Embed any markdown/org you want in comments and it will render properly in the
 transformed doc buffer.
 
-Usage:  eld-process-elisp-to-doc-buffer (buffername)
+Usage:  elispdoc-process-elisp-to-doc-buffer (buffername)
 A new buffer will be created with the transformed code within it.
 
 To determine the output format customize elispdoc-syntax.  Its set to markdown by default.
