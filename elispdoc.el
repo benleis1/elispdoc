@@ -51,11 +51,8 @@
 
 ;; ## Customizable variables
 
-;; Turn automatic function subheaders on or off.
-(defvar elispdoc-include-function-headers t  "boolean indicating whether to add a subheader for each function")
-
-;; Turn table of contents generation on or off.
-(defvar elispdoc-include-toc t  "boolean indicating whether to add a table of contents after Code: section")
+(defvar elispdoc-include-function-headers t  "Boolean indicating whether to add a subheader for each function")
+(defvar elispdoc-include-toc t  "Boolean indicating whether to add a table of contents after Code: section")
 
 ;; Map of document mode tokens
 (setq elispdoc-markdown-syntax '((flavor . markdown) (begincode . "```") (endcode . "```")
@@ -97,16 +94,33 @@
       nil)))
 
 ;; Process the next sexp to find the function name if it exists
+;; Built on the fact we can read in expressions and a function is just a list
+;; where the first argument is defun
 ;; return nil if there isn't one
-;; This is built on a simple regular expression
 (defun eld--function-name-next-sexp ()
-  (let ((bound (eld--end-point-next-sexp)))
-    (save-excursion
-      (if (re-search-forward "defun \\(.*?\\) " bound t)
-	  (match-string 1) nil))))
+  (save-excursion
+    (eld--move-start-next-sexp)
+    (if (eobp) nil
+      (let ((form (read (current-buffer))))
+	(if (and (listp form) (eq 'defun (nth 0 form)))
+	    (symbol-name (nth 1 form))
+	  nil)))))
+
+;; Process the next sexp to find the function docstring if it exists
+;; Built on the fact we can read in expressions and a function is just a list
+;; where the first argument is defun
+;; return nil if there isn't one
+(defun eld--function-docstring-next-sexp ()
+  (save-excursion
+    (eld--move-start-next-sexp)
+    (if (eobp) nil
+      (let ((form (read (current-buffer))))
+	(if (and (listp form) (eq 'defun (nth 0 form)) (stringp (nth 3 form)))
+	    (nth 3 form)
+	  nil)))))
 
 ;; Jump to the start of the next line with a comment or return null (hardcoded comment char)
-(defun eld--move-start-next-comment () 
+(defun eld--move-start-next-comment ()
   ;;  (if (re-search-forward "^;" nil t)
   (if (forward-comment 1)
       (progn
@@ -168,15 +182,22 @@
 ;; Add a header comment name at the first blank line above it
 ;  that is also after the start point
 ;; if no blank line is found insert a new line at start
-(defun eld--add-header-to-function (name start)
+(defun eld--add-header-to-function (name start &optional docstring)
   (save-excursion
     (eld--move-start-next-sexp)
     (if (re-search-backward "^$" start t)
-	(insert "\n;;" (cdr (assoc 'subheader elispdoc-syntax)) " " name)
+	(insert "\n;;" (alist-get 'subheader elispdoc-syntax) " " name)
       (progn
 	(goto-char start)
 	(beginning-of-line)
-	(insert "\n;;" (cdr (assoc 'subheader elispdoc-syntax)) " " name "\n")))))
+	(insert "\n;;" (alist-get 'subheader elispdoc-syntax) " " name "\n")
+	))
+    (when docstring
+      (progn
+	(insert "\n;;" (alist-get 'beginquote elispdoc-syntax)  docstring "\n")
+	(when  (alist-get 'endquote elispdoc-syntax)
+	  (insert "\n;;" (alist-get 'endquote elispdoc-syntax))))
+	)))
 
 ;; Process and move past the next sexp
 ;;  - Add a function header if needed
@@ -187,9 +208,10 @@
 
   ;; add function headers if enabled
   (when elispdoc-include-function-headers
-    (let ((nextfun (eld--function-name-next-sexp)))
+    (let ((nextfun (eld--function-name-next-sexp))
+	  (docstring (eld--function-docstring-next-sexp)))
       (when nextfun
-	(eld--add-header-to-function nextfun (point)))))
+	(eld--add-header-to-function nextfun (point) docstring))))
   
   (eld--uncomment-noncode-block)
   (if (eld--move-start-next-sexp)
@@ -247,7 +269,6 @@
   (beginning-of-buffer)
   (if (re-search-forward (concat "^" (alist-get 'header elispdoc-syntax) "\s?Code:") nil t)
       (progn
-	(message "adding toc")
 	(forward-line)
 	(let ((flavor (alist-get 'flavor elispdoc-syntax)))
 	  (cond ((eq flavor 'markdown) (markdown-toc-generate-toc))
@@ -285,6 +306,3 @@
       ;; Insert a toc after Code: if specified
       (when elispdoc-include-toc
 	(eld--add-toc)))))
-
-
-
