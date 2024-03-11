@@ -60,6 +60,7 @@ Transforms done:
     - [eld--point-next-sexp](#eld--point-next-sexp)
     - [eld--end-point-next-sexp](#eld--end-point-next-sexp)
     - [eld--function-name-next-sexp](#eld--function-name-next-sexp)
+    - [eld--function-docstring-next-sexp](#eld--function-docstring-next-sexp)
     - [eld--move-start-next-comment](#eld--move-start-next-comment)
     - [eld--line-next-comment](#eld--line-next-comment)
     - [eld--point-next-comment](#eld--point-next-comment)
@@ -79,14 +80,9 @@ Transforms done:
 
 ## Customizable variables
 
-Turn automatic function subheaders on or off.
 ```
-(defvar elispdoc-include-function-headers t  "boolean indicating whether to add a subheader for each function")
-```
-
-Turn table of contents generation on or off.
-```
-(defvar elispdoc-include-toc t  "boolean indicating whether to add a table of contents after Code: section")
+(defvar elispdoc-include-function-headers t  "Boolean indicating whether to add a subheader for each function")
+(defvar elispdoc-include-toc t  "Boolean indicating whether to add a table of contents after Code: section")
 ```
 
 Map of document mode tokens
@@ -146,20 +142,40 @@ Return point at end of next sexp or nil if there isn't one but doesn't move the 
 
 ## eld--function-name-next-sexp
 Process the next sexp to find the function name if it exists
+Built on the fact we can read in expressions and a function is just a list
+where the first argument is defun
 return nil if there isn't one
-This is built on a simple regular expression
 ```
 (defun eld--function-name-next-sexp ()
-  (let ((bound (eld--end-point-next-sexp)))
-    (save-excursion
-      (if (re-search-forward "defun \\(.*?\\) " bound t)
-	  (match-string 1) nil))))
+  (save-excursion
+    (eld--move-start-next-sexp)
+    (if (eobp) nil
+      (let ((form (read (current-buffer))))
+	(if (and (listp form) (eq 'defun (nth 0 form)))
+	    (symbol-name (nth 1 form))
+	  nil)))))
+```
+
+## eld--function-docstring-next-sexp
+Process the next sexp to find the function docstring if it exists
+Built on the fact we can read in expressions and a function is just a list
+where the first argument is defun
+return nil if there isn't one
+```
+(defun eld--function-docstring-next-sexp ()
+  (save-excursion
+    (eld--move-start-next-sexp)
+    (if (eobp) nil
+      (let ((form (read (current-buffer))))
+	(if (and (listp form) (eq 'defun (nth 0 form)) (stringp (nth 3 form)))
+	    (nth 3 form)
+	  nil)))))
 ```
 
 ## eld--move-start-next-comment
 Jump to the start of the next line with a comment or return null (hardcoded comment char)
 ```
-(defun eld--move-start-next-comment () 
+(defun eld--move-start-next-comment ()
   ;;  (if (re-search-forward "^;" nil t)
   (if (forward-comment 1)
       (progn
@@ -242,15 +258,22 @@ Add a header comment name at the first blank line above it
  that is also after the start point
 if no blank line is found insert a new line at start
 ```
-(defun eld--add-header-to-function (name start)
+(defun eld--add-header-to-function (name start &optional docstring)
   (save-excursion
     (eld--move-start-next-sexp)
     (if (re-search-backward "^$" start t)
-	(insert "\n;;" (cdr (assoc 'subheader elispdoc-syntax)) " " name)
+	(insert "\n;;" (alist-get 'subheader elispdoc-syntax) " " name)
       (progn
 	(goto-char start)
 	(beginning-of-line)
-	(insert "\n;;" (cdr (assoc 'subheader elispdoc-syntax)) " " name "\n")))))
+	(insert "\n;;" (alist-get 'subheader elispdoc-syntax) " " name "\n")
+	))
+    (when docstring
+      (progn
+	(insert "\n;;" (alist-get 'beginquote elispdoc-syntax)  docstring "\n")
+	(when  (alist-get 'endquote elispdoc-syntax)
+	  (insert "\n;;" (alist-get 'endquote elispdoc-syntax))))
+	)))
 ```
 
 ## eld--transform-code-block
@@ -264,9 +287,10 @@ return t if a block was found o/w nil
 
   ;; add function headers if enabled
   (when elispdoc-include-function-headers
-    (let ((nextfun (eld--function-name-next-sexp)))
+    (let ((nextfun (eld--function-name-next-sexp))
+	  (docstring (eld--function-docstring-next-sexp)))
       (when nextfun
-	(eld--add-header-to-function nextfun (point)))))
+	(eld--add-header-to-function nextfun (point) docstring))))
   
   (eld--uncomment-noncode-block)
   (if (eld--move-start-next-sexp)
@@ -337,7 +361,6 @@ Placed after Code: comment
   (beginning-of-buffer)
   (if (re-search-forward (concat "^" (alist-get 'header elispdoc-syntax) "\s?Code:") nil t)
       (progn
-	(message "adding toc")
 	(forward-line)
 	(let ((flavor (alist-get 'flavor elispdoc-syntax)))
 	  (cond ((eq flavor 'markdown) (markdown-toc-generate-toc))
@@ -347,6 +370,8 @@ Placed after Code: comment
 ```
 
 ## elispdoc-process-elisp-to-doc-buffer
+>Transform the current elisp buffer into a new markdown doc buffer
+
 Main user command to generate the processed buffer
 ```
 (defun elispdoc-process-elisp-to-doc-buffer (bufname)
@@ -363,14 +388,14 @@ Main user command to generate the processed buffer
       (replace-regexp-in-region "^;;;" (concat ";;" (cdr (assoc 'header elispdoc-syntax))) 1 nil)
       ;; Do the regular transform - quoting code and removing comments
       (eld--transform-all-code-blocks)
-      (end-of-buffer)
       ;; Add a note at the end
+      (end-of-buffer)
       (insert "\n" (alist-get 'beginquote elispdoc-syntax)
 	      " This file was auto-generated by elispdoc.el")
       (when  (alist-get 'endquote elispdoc-syntax)
 	(insert "\n"  (alist-get 'endquote elispdoc-syntax)))
 
-      (let ((flavor (cdr (assoc 'flavor elispdoc-syntax))))
+      (let ((flavor (alist-get 'flavor elispdoc-syntax)))
 	(cond ((eq flavor 'markdown) (markdown-mode))
 	      ((eq flavor 'org) (org-mode))
 	      (t (error (concat "unsupported document flavor: "
@@ -379,8 +404,5 @@ Main user command to generate the processed buffer
       (when elispdoc-include-toc
 	(eld--add-toc)))))
 ```
-
-
-
 
 > This file was auto-generated by elispdoc.el
