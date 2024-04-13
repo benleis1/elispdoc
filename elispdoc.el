@@ -202,7 +202,7 @@
 ;; Process and move past the next sexp
 ;;  - Add a function header if needed
 ;;  - Uncomment anything before the code block begins and then
-;;  -quote the next code block and leave the cursor at the end of it
+;;  - Quote the next code block and leave the cursor at the end of it
 ;; return t if a block was found o/w nil
 (defun eld--transform-code-block ()
 
