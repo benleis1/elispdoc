@@ -180,7 +180,7 @@
 	(uncomment-region start code-pos)))))
 
 ;; Add a header comment name at the first blank line above it
-;  that is also after the start point
+;; that is also after the start point
 ;; if no blank line is found insert a new line at start
 (defun eld--add-header-to-function (name start &optional docstring)
   (save-excursion
