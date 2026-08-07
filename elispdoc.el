@@ -71,7 +71,7 @@
     (forward-sexp)
     (if (or (eq (point) start) (eobp))
 	nil
-      (progn 
+      (progn
 	(backward-sexp)
 	t))))
 
@@ -127,7 +127,7 @@
 	(forward-line -1)
 	(beginning-of-line)
 	t)
-      nil)) 
+      nil))
 
 ;; Return line of next line that starts with a comment or nil if there isn't one but doesn't
 ;; move the cursor (hardcoded comment char)
@@ -194,7 +194,12 @@
 	))
     (when docstring
       (progn
-	(insert "\n;;" (alist-get 'beginquote elispdoc-syntax)  docstring "\n")
+	;; Docstrings can span multiple lines; each embedded newline must be
+	;; re-commented or the continuation lines land as bare, uncommented
+	;; text in the elisp buffer, corrupting its syntax for every
+	;; `forward-sexp'/`scan-sexps' call from here on.
+	(insert "\n;;" (alist-get 'beginquote elispdoc-syntax)
+		(replace-regexp-in-string "\n" "\n;;" docstring) "\n")
 	(when  (alist-get 'endquote elispdoc-syntax)
 	  (insert "\n;;" (alist-get 'endquote elispdoc-syntax))))
 	)))
@@ -212,7 +217,7 @@
 	  (docstring (eld--function-docstring-next-sexp)))
       (when nextfun
 	(eld--add-header-to-function nextfun (point) docstring))))
-  
+
   (eld--uncomment-noncode-block)
   (if (eld--move-start-next-sexp)
       (progn
@@ -262,7 +267,7 @@
    ":CONTENTS:\n"
    ":END:\n")
   (org-make-toc))
-  
+
 ;; setup a table of contents using markdown-toc
 ;; Placed after Code: comment
 (defun eld--add-toc ()
@@ -287,7 +292,7 @@
       (lisp-mode)
       ;; remove any emacs file variables on the first line.
       (eld--regex-replace-on-line "\-\*\-.*\-*\-" "")
-      ;; Convert any  triple comments to markdown headers 
+      ;; Convert any  triple comments to markdown headers
       (replace-regexp-in-region "^;;;" (concat ";;" (cdr (assoc 'header elispdoc-syntax))) 1 nil)
       ;; Do the regular transform - quoting code and removing comments
       (eld--transform-all-code-blocks)
