@@ -24,25 +24,28 @@
 
 ;;; Commentary:
 ;;
-;; Simple tool to provide a javadoc like pipeline for elisp files that outputs a markdown or org file
-;; made out of comments with interspersed code blocks
+;; Simple tool to provide a javadoc like pipeline for elisp files that outputs a
+;; markdown or org file made out of comments with interspersed code blocks
 ;;
-;; This is intended as an alternative to writing a config file in an org file and tangling it
-;; where you want the comments and code to be first class but also want to publish documentation
-;; built from it. Embed any markdown/org you want in comments and it will render properly in the
-;; transformed doc buffer.
+;; This is intended as an alternative to writing a config file in an org file
+;; and tangling it where you want the comments and code to be first class but
+;; also want to publish documentation built from it. Embed any markdown/org you
+;; want in comments and it will render properly in the transformed doc buffer.
 ;;
 ;; Usage:  elispdoc-process-elisp-to-doc-buffer (buffername)
 ;; A new buffer will be created with the transformed code within it.
 ;;
-;; To determine the output format customize elispdoc-syntax.  Its set to markdown by default.
+;; To determine the output format customize elispdoc-syntax.  Its set to
+;; markdown by default.
 ;;
 ;; Transforms done:
 ;;  - all code is blocked together
 ;;  - comment prefixes `;` are removed
 ;;  - triple comments  `;;;` are turned into headers
+;;  - quadruple comments `;;;;` are turned into subheaders
 ;;  - Emacs variables filtered on the first line
-;;  - Subheaders added for a functions
+;;  - Subheaders added for a functions, nested as a sub2header instead
+;;    when the function falls under a `;;;;' subheader
 ;;  - TOC inserted after Code: comment
 ;;
 ;; - TODO: add variable support in headers and sort option for toc
@@ -56,24 +59,37 @@
 
 ;; Map of document mode tokens
 (setq elispdoc-markdown-syntax '((flavor . markdown) (begincode . "```") (endcode . "```")
-			    (header . "#") (subheader . "##") (beginquote . ">")))
+			    (header . "#") (subheader . "##") (sub2header . "###") (beginquote . ">")))
 
 (setq elispdoc-org-syntax '((flavor . org) (begincode . "#+BEGIN_SRC lisp") (endcode . "#+END_SRC")
-		       (header . "*") (subheader . "**") (beginquote . "#+BEGIN_QUOTE\n" )
+		       (header . "*") (subheader . "**") (sub2header . "***") (beginquote . "#+BEGIN_QUOTE\n" )
 		       (endquote . "#+END_QUOTE")))
 
 ;; Allow the user to pick between markdown, org and any future doc flavors
 (defvar elispdoc-syntax elispdoc-markdown-syntax "Mapping used to determine the flavor of the output doc file")
 
-;; Jump to the start of the next sexp and return t if successful
+;; Jump to the start of the next sexp and return t if successful.
+;; Bounded to never leave point before START: a desynced syntax table
+;; (e.g. an unterminated string uncommented earlier in the buffer, which
+;; makes the reader think it's still inside that string) can make
+;; `forward-sexp'/`backward-sexp' land far *earlier* in the buffer than
+;; where we started, or signal a scan-error outright. Either symptom
+;; means the buffer's syntactic state can't be trusted from here, so we
+;; treat it the same as "no next sexp" instead of returning a bogus
+;; position that would go on to corrupt everything downstream, and
+;; restore point to START so the caller's own state stays consistent.
 (defun eld--move-start-next-sexp ()
   (let ((start (point)))
-    (forward-sexp)
-    (if (or (eq (point) start) (eobp))
-	nil
-      (progn
-	(backward-sexp)
-	t))))
+    (condition-case nil
+	(progn
+	  (forward-sexp)
+	  (if (eobp)
+	      (progn (goto-char start) nil)
+	    (backward-sexp)
+	    (if (< (point) start)
+		(progn (goto-char start) nil)
+	      t)))
+      (scan-error (goto-char start) nil))))
 
 ;; Return line of next sexp or nil if there isn't one but doesn't move the cursor
 (defun eld--line-next-sexp ()
@@ -101,7 +117,7 @@
   (save-excursion
     (eld--move-start-next-sexp)
     (if (eobp) nil
-      (let ((form (read (current-buffer))))
+      (let ((form (condition-case nil (read (current-buffer)) (error nil))))
 	(if (and (listp form) (eq 'defun (nth 0 form)))
 	    (symbol-name (nth 1 form))
 	  nil)))))
@@ -114,7 +130,7 @@
   (save-excursion
     (eld--move-start-next-sexp)
     (if (eobp) nil
-      (let ((form (read (current-buffer))))
+      (let ((form (condition-case nil (read (current-buffer)) (error nil))))
 	(if (and (listp form) (eq 'defun (nth 0 form)) (stringp (nth 3 form)))
 	    (nth 3 form)
 	  nil)))))
@@ -179,30 +195,67 @@
 	(goto-char (- code-pos 1))
 	(uncomment-region start code-pos)))))
 
+;; Ordered list of (marker . type) pairs, one per ;;; or ;;;; heading in
+;; the buffer being processed, TYPE being 'header or 'subheader. Built
+;; once up front via `eld--build-heading-positions' and bound for the
+;; duration of `elispdoc-process-elisp-to-doc-buffer' so that later
+;; insertions (headers, quoting, uncommenting) can't desync it - markers
+;; track their line automatically as the buffer is edited.
+(defvar eld--heading-positions nil)
+
+;; Scan the whole buffer for ;;; and ;;;; heading lines and record their
+;; positions and level, in order, before those lines are rewritten into
+;; the output doc syntax.
+(defun eld--build-heading-positions ()
+  (save-excursion
+    (goto-char (point-min))
+    (let (positions)
+      (while (re-search-forward "^;;;+" nil t)
+	(let* ((len (- (match-end 0) (match-beginning 0)))
+	       (type (if (>= len 4) 'subheader 'header))
+	       (marker (copy-marker (match-beginning 0))))
+	  (push (cons marker type) positions)))
+      (nreverse positions))))
+
+;; Return the type ('header or 'subheader) of the nearest heading at or
+;; before POS, per POSITIONS (as built by `eld--build-heading-positions'),
+;; or nil if POS comes before every heading
+(defun eld--heading-type-before (positions pos)
+  (let (result)
+    (dolist (entry positions result)
+      (when (<= (marker-position (car entry)) pos)
+	(setq result (cdr entry))))))
+
 ;; Add a header comment name at the first blank line above it
 ;; that is also after the start point
 ;; if no blank line is found insert a new line at start
+;; Nests under the last ;;;/;;;; heading seen before START: a function
+;; under a top-level header gets a subheader, one under a subheader gets
+;; a sub2header.
 (defun eld--add-header-to-function (name start &optional docstring)
-  (save-excursion
-    (eld--move-start-next-sexp)
-    (if (re-search-backward "^$" start t)
-	(insert "\n;;" (alist-get 'subheader elispdoc-syntax) " " name)
-      (progn
-	(goto-char start)
-	(beginning-of-line)
-	(insert "\n;;" (alist-get 'subheader elispdoc-syntax) " " name "\n")
-	))
-    (when docstring
-      (progn
-	;; Docstrings can span multiple lines; each embedded newline must be
-	;; re-commented or the continuation lines land as bare, uncommented
-	;; text in the elisp buffer, corrupting its syntax for every
-	;; `forward-sexp'/`scan-sexps' call from here on.
-	(insert "\n;;" (alist-get 'beginquote elispdoc-syntax)
-		(replace-regexp-in-string "\n" "\n;;" docstring) "\n")
-	(when  (alist-get 'endquote elispdoc-syntax)
-	  (insert "\n;;" (alist-get 'endquote elispdoc-syntax))))
-	)))
+  (let* ((sexp-start (save-excursion (eld--move-start-next-sexp) (point)))
+	 (heading-type (eld--heading-type-before eld--heading-positions sexp-start))
+	 (level (if (eq heading-type 'subheader) 'sub2header 'subheader)))
+    (save-excursion
+      (eld--move-start-next-sexp)
+      (if (re-search-backward "^$" start t)
+	  (insert "\n;;" (alist-get level elispdoc-syntax) " " name)
+	(progn
+	  (goto-char start)
+	  (beginning-of-line)
+	  (insert "\n;;" (alist-get level elispdoc-syntax) " " name "\n")
+	  ))
+      (when docstring
+	(progn
+	  ;; Docstrings can span multiple lines; each embedded newline must be
+	  ;; re-commented or the continuation lines land as bare, uncommented
+	  ;; text in the elisp buffer, corrupting its syntax for every
+	  ;; `forward-sexp'/`scan-sexps' call from here on.
+	  (insert "\n;;" (alist-get 'beginquote elispdoc-syntax)
+		  (replace-regexp-in-string "\n" "\n;;" docstring) "\n")
+	  (when  (alist-get 'endquote elispdoc-syntax)
+	    (insert "\n;;" (alist-get 'endquote elispdoc-syntax))))
+	))))
 
 ;; Process and move past the next sexp
 ;;  - Add a function header if needed
@@ -292,10 +345,16 @@
       (lisp-mode)
       ;; remove any emacs file variables on the first line.
       (eld--regex-replace-on-line "\-\*\-.*\-*\-" "")
-      ;; Convert any  triple comments to markdown headers
-      (replace-regexp-in-region "^;;;" (concat ";;" (cdr (assoc 'header elispdoc-syntax))) 1 nil)
-      ;; Do the regular transform - quoting code and removing comments
-      (eld--transform-all-code-blocks)
+      ;; Record where each ;;; and ;;;; heading falls before they're
+      ;; rewritten below, so function headers can nest under them correctly
+      (let ((eld--heading-positions (eld--build-heading-positions)))
+	;; Convert any  quadruple comments to markdown subheaders
+	(replace-regexp-in-region "^;;;;" (concat ";;" (cdr (assoc 'subheader elispdoc-syntax))) 1 nil)
+
+	;; Convert any  triple comments to markdown headers
+	(replace-regexp-in-region "^;;;" (concat ";;" (cdr (assoc 'header elispdoc-syntax))) 1 nil)
+	;; Do the regular transform - quoting code and removing comments
+	(eld--transform-all-code-blocks))
       ;; Add a note at the end
       (end-of-buffer)
       (insert "\n" (alist-get 'beginquote elispdoc-syntax)
